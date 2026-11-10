@@ -56,6 +56,24 @@ ask("What is the APR on a $30,000 boat loan over 36 months?")
 
 The auto loan answer cites the published rate and explains why it takes precedence over the calculator. The boat loan answer cites the published tier for 60 months. The 36-month question returns “I don’t know” because the snapshots provide no published rate for that amount and term. The prompt stays open for other questions. Use `exit()` to leave it.
 
+## Design
+
+`answer()` uses the newest snapshot by default and the newest snapshot on or before `as_of` for historical questions. `conflicts()` reviews claims across the indexed snapshots. The crawl check compares a candidate with a validated reference and can run approved answer and citation probes.
+
+```mermaid
+flowchart TD
+    snapshots["Dated website snapshots"] --> ingest["ingest()"]
+    ingest --> index["Rate tables and text indexed by snapshot"]
+    question["Question and optional as_of date"] --> select["Select snapshot"]
+    index --> select
+    select --> match["Match qualifiers and weigh evidence"]
+    match --> answer["Cited answer or abstention"]
+    index --> scan["conflicts()"]
+    scan --> conflicts["Competing claims, sources, and resolution"]
+    crawls["Reference and candidate crawls"] --> gate["Optional crawl check"]
+    gate --> decision["Pass or hold"]
+```
+
 ## What to inspect
 
 | Behavior | Implementation | Verification |
