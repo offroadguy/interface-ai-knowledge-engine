@@ -35,13 +35,45 @@ PYTHONPATH=../participant-kit/harness python3.11 -m scripts.check_crawl \
   --candidate 05_2026-09-28_latest
 ```
 
-## Measured results
+## Sample run
 
-| Check | Local Python 3.11 run |
-| --- | --- |
-| Organizer public evaluation, 40 questions | 0.9535 vs. 0.093 for the starter. Zero execution errors and zero stale-value traps. |
-| Public answer latency | 0.02 s p95 on the development machine. |
-| Organizer self-test | 1.0 across five questions and one labeled conflict. |
-| Unit tests | Nine passed. |
+A local Python 3.11 run of `sh scripts/verify.sh` produced the following excerpts.
 
-The public evaluation checks answer quality on the supplied questions. The labeled self-test exercises the conflict scorer on one known case. The hidden evaluation remains unmeasured.
+```text
+Ran 9 tests in 0.005s
+OK
+
+Public evaluation
+  "questions": 40,
+  "stale_trap_hits": 0,
+  "errors": 0,
+  "final_score": 0.9535,
+
+Organizer self-test
+  "questions": 5,
+  "matched": 1,
+  "resolution_accuracy": 1.0
+  "final_score": 1.0,
+```
+
+The starter scored 0.093 on the same public questions. The solution's p95 response time was 0.02 seconds on the development machine. The labeled self-test checks one known conflict. The hidden evaluation remains unmeasured.
+
+The crawl check passed for the August-to-September comparison above. In a separate run with a fabricated candidate missing one of two auto-rate facts, it returned a hold.
+
+```json
+{
+  "decision": "hold",
+  "reference": "validated",
+  "candidate": "candidate",
+  "minimum_percent": 80,
+  "coverage": {
+    "auto": {
+      "reference": 2,
+      "candidate": 1
+    }
+  },
+  "failures": [
+    "auto: 1/2 usable rate facts"
+  ]
+}
+```
