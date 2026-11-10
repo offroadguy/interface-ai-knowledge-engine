@@ -16,6 +16,13 @@ PUBLICATION = re.compile(rf"(?m)^({MONTH} \d{{1,2}}, \d{{4}})$")
 ADDRESS = re.compile(r"\b\d{1,6} [^\n]{4,75},\s*[A-Z]{2},?\s+\d{5}\b")
 PHONE = re.compile(r"(?<!\d)(?:1[- ])?\(?\d{3}\)?[- .]\d{3}[- .]\d{4}(?!\d)")
 ROUTING = re.compile(r"\b(?:routing|aba)(?: number)?[\s:(*]*(\d{9})\b", re.I)
+ROUTING_QUERY = re.compile(
+    r"(?:what s|what is|where (?:can|do) i find|can you (?:repeat|give me|tell me)|(?:give|tell) me|repeat)?\s*"
+    r"(?:(?:the|your|our|dupaco(?: community credit union)? s) )?"
+    r"(?:routing|aba(?: routing)?) number(?: (?:for|of) dupaco(?: community credit union)?)?(?: again)?(?: please)?"
+)
+BRANCH_NOUN = re.compile(r"\b(?:branch|learning lab)\b")
+BRANCH_QUERY = re.compile(r"\b(?:at|in|for|does|is|the) (?:the )?((?:\w+ ){1,5}?(?:branch|learning lab))\b")
 BRANCH_COUNT = re.compile(r"\b(\d{1,3})\s+(?:full.service\s+)?branch(?:es|\s+(?:office\s+)?locations)\b", re.I)
 CLOSURE = re.compile(rf"\b(?:will close|closed|closes|closing(?: on)?)\s+(?:on\s+)?({MONTH} \d{{1,2}}, \d{{4}})", re.I)
 SCHEDULE = re.compile(r"^(?:Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)[^\n]{1,100}$", re.I | re.M)
@@ -218,7 +225,7 @@ class EvidenceIndex:
     def answer(self, question, cutoff):
         q = question.casefold()
         if re.search(r"\b(?:routing|aba) number\b", q):
-            return self._routing()
+            return self._routing() if ROUTING_QUERY.fullmatch(normalize(question).removeprefix("please ")) else unknown()
         if re.search(r"\b(?:locator|branch and atm|branch & atm)\b", q) and re.search(r"url|link|locator|website", q):
             return self._locator()
         if re.search(r"how many\b.*\bbranches\b|\bbranch count\b", q):
@@ -360,7 +367,15 @@ class EvidenceIndex:
         if re.search(r"\b(?:apr|apy|interest rate|dividend rate)\b", q):
             return unknown()
         query = set(tokens(question))
+        normalized = normalize(question)
+        branch = BRANCH_QUERY.search(normalized)
+        needs_branch_evidence = BRANCH_NOUN.search(normalized)
         for passage, matches in self.ranked(question)[:25]:
+            if needs_branch_evidence and not any(
+                query <= set(tokens(line)) and (not branch or f" {branch[1]} " in f" {normalize(line)} ")
+                for line in re.split(r"\n|(?<=[.!?])\s+", passage.text)
+            ):
+                continue
             if len(matches) < max(2, math.ceil(len(query) * 0.55)):
                 continue
             if re.search(r"\b(?:how many|how much|fee|cost)\b", q) and not re.search(r"\d", passage.text):

@@ -12,7 +12,10 @@ from contract import Answer, Conflict, Snapshot, Source
 
 PERCENT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 MONEY = re.compile(r"\$\s*(\d[\d,]*(?:\.\d+)?)(?:\s*([kKmM])\b)?")
-TERM = re.compile(r"\b(\d+)\s*[-– ]?\s*(month|year)s?\b", re.I)
+TERM = re.compile(r"\b(\d+)[\s–—-]*(month|year)s?\b", re.I)
+AMOUNT_TIER = re.compile(r"^\$\s*(?P<lower>\d[\d,]*(?:\.\d+)?)"
+                         r"(?:\s*[-–—]\s*\$?\s*(?P<upper>\d[\d,]*(?:\.\d+)?))?")
+MODEL_TIER = re.compile(r"model year\s+(\d{4})(?:\s*[-–—]\s*(\d{2}|\d{4}))?", re.I)
 NUMBER_WORDS = dict(zip("one two three four five six seven eight nine ten eleven twelve".split(), range(1, 13)))
 EFFECTIVE = re.compile(r"effective(?:\s+as of)?\s*:?\s*(\d{1,2}/\d{1,2}/\d{4})", re.I)
 EXPIRES = re.compile(r"(?:offer expires|available (?:through|until))\s*(\d{1,2}/\d{1,2}/\d{4})", re.I)
@@ -21,6 +24,18 @@ DEPOSIT = {"deposit", "certificate", "ira"}
 RATE_WORD = re.compile(r"\b(?:rates?|aprs?|apys?|dividends?|yields?|interest)\b")
 CARD = re.compile(r"\b(?:credit cards?|visa|platinum card|rewards card)\b")
 MORTGAGE = re.compile(r"\b(?:mortgages?|home loans?|refinanc\w*|arm|construction loans?)\b")
+APR_CEILING = re.compile(r"\b(?:maximum|max|highest|upper)\b")
+NAMED_ACCOUNT = re.compile(r"\b(\w+) (?:savings|checking|money market)\b")
+GENERIC_ACCOUNT_WORDS = set(
+    "a all an and any are as business compare current do does dupaco for from in is my of on or our personal the to with your".split()
+)
+RECREATIONAL = {
+    "boat": "Boat and RV loan", "rv": "Boat and RV loan",
+    "atv": "ATV, Snowmobile and Jet Ski loan", "snowmobile": "ATV, Snowmobile and Jet Ski loan",
+    "jet ski": "ATV, Snowmobile and Jet Ski loan",
+    "motorcycle": "Motorcycle and powersport loan", "powersport": "Motorcycle and powersport loan",
+}
+RECREATIONAL_HEADING = re.compile(r"\b(?:" + "|".join(RECREATIONAL) + r")\b")
 
 
 def normalize(value):
@@ -37,7 +52,7 @@ def amounts(text):
 
 
 def term_months(text):
-    text = re.sub(r"\b(" + "|".join(NUMBER_WORDS) + r")(?=[ -]+(?:months?|years?)\b)",
+    text = re.sub(r"\b(" + "|".join(NUMBER_WORDS) + r")(?=[\s–—-]+(?:months?|years?)\b)",
                   lambda match: str(NUMBER_WORDS[match[1]]), text.casefold())
     return {int(number) * (12 if unit == "year" else 1) for number, unit in TERM.findall(text)}
 
@@ -62,6 +77,18 @@ class Rate:
     authority: int
     effective: date | None
     expires: date | None
+    as_low_as: bool = False
+
+    @property
+    def business_deposit(self):
+        return self.kind == "deposit" and ("business" in normalize(self.product).split()
+                                           or urlsplit(self.source.url).path.startswith("/business/"))
+
+    @property
+    def label(self):
+        if self.business_deposit and "business" not in normalize(self.product).split():
+            return f"Business {self.product}"
+        return self.product
 
     @property
     def key(self):
@@ -69,7 +96,9 @@ class Rate:
         product = normalize(self.product)
         if self.kind in ("certificate", "business certificate"):
             product = re.sub(r"\b(?:fixed|term|share|certificate|certificates|months?)\b", "", product)
-        return self.kind, normalize(product), normalize(tier)
+        if self.business_deposit:
+            product = product.removeprefix("business ")
+        return self.kind, normalize(product), normalize(tier), self.business_deposit
 
     def value(self, metric):
         return dict(self.metrics).get(metric, "")
@@ -117,9 +146,12 @@ def _classify(headers, row, context, path):
     if first == "product":
         return "loan", row[0], ""
     if first in ("loan amount", "loan type"):
-        label = ("Home improvement loan" if first == "loan amount" else
-                 "Boat and RV loan" if re.search(r"boat|rv", context, re.I) else
-                 "Motorcycle and powersport loan" if re.search(r"motorcycle|powersport", context, re.I) else "")
+        heading = RECREATIONAL_HEADING.findall(normalize(context))
+        label = "Home improvement loan" if first == "loan amount" else ""
+        if first == "loan type" and heading:
+            label = RECREATIONAL[heading[-1]]
+            if label == RECREATIONAL["boat"] and not AMOUNT_TIER.match(row[0]):
+                return None
         if label and len(row) > 2:
             return "loan", label, " · ".join(row[:2])
     return None
@@ -179,6 +211,7 @@ def extract_rates(snapshot: Snapshot) -> list[Rate]:
             columns = _columns(header)
             if not columns:
                 continue
+            as_low_as = any(metric == "APR" and "as low as" in header[i] for i, metric in columns.items())
             # Find the table footnote directly after the rows, before the next table.
             tail = "\n".join(all_lines[offset:offset + 40]).split("\n|", 1)[0][:1200]
             effective, expires = _date(EFFECTIVE, tail), _date(EXPIRES, tail)
@@ -193,7 +226,7 @@ def extract_rates(snapshot: Snapshot) -> list[Rate]:
                                 for i, metric in columns.items() if PERCENT.search(row[i]))
                 if metrics:
                     result.append(Rate(*label, metrics, Source(page.url, snapshot.snapshot_id, line.strip()),
-                                       authority, effective, expires))
+                                       authority, effective, expires, as_low_as))
     return result
 
 
@@ -224,6 +257,7 @@ def resolved_rates(rows, cutoff):
                 compatible = [(row, item) for row, item in active
                               if _numeric_value(item) in values and row.authority == top_rank[0]]
                 winner, value = min(compatible, key=lambda pair: (
+                    metric == "APR" and not pair[0].as_low_as,
                     urlsplit(pair[0].source.url).path.rstrip("/").endswith("/rates"),
                     -(pair[0].effective or date.min).toordinal(), pair[0].source.url))
                 winners.append((winner, metric, value))
@@ -238,7 +272,7 @@ def resolved_rates(rows, cutoff):
                 ordered = [unique[key] for key in sorted(unique)]
                 expired = any(row.expires and row.expires < cutoff for row, _ in entries)
                 conflicts.append(Conflict(
-                    " ".join(filter(None, (label.product, label.tier, metric))),
+                    " ".join(filter(None, (label.label, label.tier, metric))),
                     [value for value, _ in ordered], [source for _, source in ordered],
                     winner.value(metric) if winner else None,
                     ("Prefer the active official rate over expired evidence." if winner and expired else
@@ -270,7 +304,7 @@ def historical_rate_conflicts(observations):
         if ranked[1][0] == latest:
             value = None
         output.append(Conflict(
-            " ".join(filter(None, (label.product, label.tier, metric))),
+            " ".join(filter(None, (label.label, label.tier, metric))),
             [v for _, _, v in ranked], [row.source for _, row, _ in ranked], value,
             f"Crawls disagree for the same published effective date ({effective.isoformat()}). "
             "Prefer the latest unambiguous official observation.",
@@ -281,11 +315,8 @@ def historical_rate_conflicts(observations):
 def _deposit_rows(question, entries, kind):
     q = normalize(question)
     if kind == "deposit":
-        wants_business = "business" in q
-        entries = [item for item in entries if (
-            "business" in normalize(item[0].product) or
-            urlsplit(item[0].source.url).path.startswith("/business/")
-        ) == wants_business]
+        wants_business = "business" in q.split()
+        entries = [item for item in entries if item[0].business_deposit == wants_business]
     if kind in ("certificate", "business certificate", "ira"):
         entries = [item for item in entries if
                    ("jumbo" not in q or "jumbo" in normalize(item[0].product))
@@ -296,9 +327,11 @@ def _deposit_rows(question, entries, kind):
         if months:
             entries = [item for item in entries if months & term_months(item[0].product)]
     else:
-        named = {normalize(item[0].product) for item in entries if normalize(item[0].product) in q}
+        named = {normalize(item[0].product) for item in entries if f" {normalize(item[0].product)} " in f" {q} "}
         if named:
             entries = [item for item in entries if normalize(item[0].product) in named]
+        elif any(match[1] not in GENERIC_ACCOUNT_WORDS for match in NAMED_ACCOUNT.finditer(q)):
+            return []
         elif "checking" in q:
             entries = [item for item in entries if "checking" in normalize(item[0].product)]
         elif "money market" in q:
@@ -314,6 +347,22 @@ def _deposit_rows(question, entries, kind):
             return not tier or (tier[0] <= min(balance) and (len(tier) == 1 or max(balance) <= tier[-1]))
         entries = [item for item in entries if covers(item)]
     return entries
+
+
+def _loan_tier_matches(tier, balance, years):
+    amount = AMOUNT_TIER.match(tier)
+    if amount and balance:
+        lower = Decimal(amount["lower"].replace(",", ""))
+        upper = Decimal(amount["upper"].replace(",", "")) if amount["upper"] else Decimal("Infinity")
+        return lower <= min(balance) and max(balance) <= upper
+    model = MODEL_TIER.match(tier)
+    if model and years:
+        first = int(model[1])
+        second = int(model[2]) if model[2] else first
+        if second < 100:
+            second += first // 100 * 100
+        return min(first, second) <= min(years) and max(years) <= max(first, second)
+    return True
 
 
 def answer_rate(question: str, resolved):
@@ -333,17 +382,27 @@ def answer_rate(question: str, resolved):
         kind = "mortgage"
     elif re.search(r"\b(?:savings|checking|money market|hsa|deposit)\b", q):
         kind = "deposit"
-    elif re.search(r"\b(?:loans?|rv|heloc)\b", q):
+    elif re.search(r"\b(?:loans?|rv|heloc|atv|snowmobile|jet ski|powersport)\b", q):
         kind = "loan"
     else:
         return None
     entries = [item for item in resolved if item[0].kind == kind]
     if kind in DEPOSIT or kind == "business certificate":
         entries = _deposit_rows(question, entries, kind)
-        metric = "dividend rate" if "dividend rate" in q and "apy" not in q else "APY"
-        entries = [item for item in entries if item[1] == metric]
+        dividend = bool(re.search(r"\bdividend rates?\b", q))
+        apy = bool(re.search(r"\b(?:apys?|annual percentage yield)\b", q))
+        metrics = {"dividend rate"} if dividend else {"APY"}
+        if apy:
+            metrics.add("APY")
+        entries = [item for item in entries if item[1] in metrics]
+        if len(metrics) == 2:
+            available = defaultdict(set)
+            for row, metric, _ in entries:
+                available[row.key].add(metric)
+            if any(found != metrics for found in available.values()):
+                return _unknown()
         requested = PERCENT.search(q)
-        if requested and re.search(r"\b(?:pay|offer|earn|available|rate of|match)\b", q):
+        if len(metrics) == 1 and requested and re.search(r"\b(?:pay|offer|earn|available|rate of|match)\b", q):
             matching = [item for item in entries if Decimal(PERCENT.search(item[2])[1]) == Decimal(requested[1])]
             if matching:
                 if not any(normalize(item[0].product) in normalize(q) for item in entries):
@@ -354,17 +413,20 @@ def answer_rate(question: str, resolved):
             elif entries:
                 best = max(entries, key=lambda item: Decimal(PERCENT.search(item[2])[1]))
                 return _render([best], lead="I couldn't verify the quoted rate. The highest listed match is")
-        if re.search(r"\b(?:highest|maximum|best)\b", q):
+        if len(metrics) == 1 and re.search(r"\b(?:highest|maximum|best)\b", q):
             entries.sort(key=lambda item: Decimal(PERCENT.search(item[2])[1]), reverse=True)
             entries = entries[:1]
     elif kind == "card":
+        names = set(re.findall(r"\b(?:platinum|rewards)\b", q))
         entries = [item for item in entries if
                    ("business" not in q or "business" in normalize(item[0].product))
                    and ("personal" not in q or "business" not in normalize(item[0].product))
-                   and all(name not in q or name in normalize(item[0].product) for name in ("platinum", "rewards"))
+                   and (not names or names.intersection(normalize(item[0].product).split()))
                    and ("introductory" in item[0].tier) == bool(re.search(r"intro|balance transfer", q))]
         if "business" not in q and re.search(r"platinum|rewards", q):
             entries = [item for item in entries if "business" not in normalize(item[0].product)]
+        if not names <= {word for row, _, _ in entries for word in normalize(row.product).split()}:
+            return _unknown()
     elif kind in ("mortgage", "home equity refinance"):
         if re.search(r"construction|adjustable|\barm\b|\d+\s*/\s*\d+", q):
             return _unknown()
@@ -388,16 +450,21 @@ def answer_rate(question: str, resolved):
             entries = [item for item in entries if item[1] == "interest rate"]
         entries.sort(key=lambda item: (amounts(item[0].product) or [Decimal("Infinity")])[0])
     else:
-        aliases = {"heloc": "home equity line of credit", "boat": "boat", "rv": "boat",
-                   "personal loan": "personal loan", "home improvement": "home improvement",
-                   "motorcycle": "motorcycle", "powersport": "motorcycle", "home equity": "home equity"}
-        targets = {label for alias, label in aliases.items() if alias in q}
+        aliases = {**RECREATIONAL, "heloc": "home equity line of credit", "personal loan": "personal loan",
+                   "home improvement": "home improvement", "home equity": "home equity"}
+        targets = {label.casefold() for alias, label in aliases.items() if re.search(rf"\b{alias}s?\b", normalize(q))}
         if not targets:
             return _unknown()
         entries = [item for item in entries if any(label in item[0].product.lower() for label in targets)]
-        terms = {int(number) * (12 if unit.lower() == "year" else 1) for number, unit in TERM.findall(q)}
+        terms = term_months(question)
         if terms:
-            entries = [item for item in entries if any(int(number) in terms for number, _ in TERM.findall(item[0].tier))]
+            entries = [item for item in entries if terms & term_months(item[0].tier)]
+        balance = amounts(question)
+        years = {int(year) for pair in re.findall(r"\b(\d{4}) model\b|\bmodel year (\d{4})\b", normalize(q))
+                 for year in pair if year}
+        entries = [item for item in entries if _loan_tier_matches(item[0].tier, balance, years)]
+    if kind not in DEPOSIT and kind != "business certificate" and APR_CEILING.search(q):
+        return _unknown()
     return _render(entries)
 
 
@@ -411,13 +478,14 @@ def _render(entries, *, lead="", limit=24):
         return _unknown()
     lines, sources = [], []
     for row, metric, value in entries[:limit]:
-        label = row.product
+        label = row.label
         if row.tier:
             qualifier = "minimum " if row.kind in ("certificate", "business certificate", "ira") else ""
             if row.tier != "—":
                 label += f" ({qualifier}{row.tier})"
         label = re.sub(r"(\$\d{1,3})(\d{3})(?=\D|$)", r"\1,\2", label)
-        lines.append(f"{label}: {value} {metric}")
+        qualifier = "as low as " if metric == "APR" and row.as_low_as else ""
+        lines.append(f"{label}: {qualifier}{value} {metric}")
         if row.source not in sources:
             sources.append(row.source)
     prefix = f"{lead} " if lead else ""
