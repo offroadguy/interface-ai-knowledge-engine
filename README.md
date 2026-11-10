@@ -14,6 +14,48 @@ The script runs the unit tests, the unchanged public evaluator, and the organize
 
 The grader entry point is [`solution.build()`](solution.py). It returns a system with `ingest`, `answer`, and `conflicts` methods. [NOTES.md](NOTES.md) has the equivalent direct scorer commands and describes the decision rules.
 
+## Run the interactive demo
+
+Open a terminal in the checkout. You can use the integrated terminal in VS Code. After running the verification command above, start a Python prompt with the five assignment snapshots loaded. This command uses the same `PYTHON` setting as the verification script.
+
+```sh
+PYTHONPATH=../participant-kit/harness "${PYTHON:-python3.11}" -qi -c "$(cat <<'PY'
+from pathlib import Path
+
+from run_eval import load_snapshots
+from solution import build
+
+engine = build()
+snapshots = load_snapshots(Path("../participant-kit/snapshots"))
+for snapshot in snapshots:
+    engine.ingest(snapshot)
+
+def ask(question):
+    answer = engine.answer(question)
+    print(answer.text)
+    print(f"Confident: {answer.confident}")
+    for source in answer.sources:
+        print(f"Source: {source.url} ({source.snapshot_id})")
+        if source.quote:
+            print(f"Evidence: {source.quote}")
+    if answer.conflict_note:
+        print(f"Conflict decision: {answer.conflict_note}")
+
+print(f"Loaded {len(snapshots)} snapshots. Use ask(question) to try the demo.")
+PY
+)"
+```
+
+Enter these questions one at a time at the `>>>` prompt.
+
+```python
+ask("What APR is available for a five-year auto loan on a 2025 model?")
+ask("What is the APR on a $30,000 boat loan over 60 months?")
+ask("What is the APR on a $30,000 boat loan over 36 months?")
+```
+
+The auto loan answer cites the published rate and explains why it takes precedence over the calculator. The boat loan answer cites the published tier for 60 months. The 36-month question returns “I don’t know” because the snapshots provide no published rate for that amount and term. The prompt stays open for other questions. Use `exit()` to leave it.
+
 ## What to inspect
 
 | Behavior | Implementation | Verification |
