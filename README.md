@@ -22,6 +22,18 @@ The grader entry point is [`solution.build()`](solution.py). It returns a system
 | Compare loan rates only for the same term and overlapping model years | [auto_rates.py](auto_rates.py) | [Auto loan source and ambiguity tests](test_auto_rates.py) |
 | Keep APY, APR, balance tiers, and offer dates distinct | [rate_tables.py](rate_tables.py) | [Expired offer and historical correction tests](test_knowledge.py) |
 | Cite prose evidence or abstain when a fact cannot be verified | [evidence.py](evidence.py) | [Missing location and historical fee tests](test_knowledge.py) |
+| Hold an incomplete crawl before it serves rates | [scripts/check_crawl.py](scripts/check_crawl.py) | [Crawl coverage and failure tests](test_check_crawl.py) |
+
+## Check a candidate crawl
+
+Run the optional [crawl coverage check](scripts/check_crawl.py) against the last validated snapshot before serving a candidate. It emits JSON with the crawl IDs, the coverage counts, and the decision. Exit code `0` means the coverage check passed, `1` means hold, and `2` means the check could not run with the supplied inputs.
+
+```sh
+PYTHONPATH=../participant-kit/harness python3.11 -m scripts.check_crawl \
+  --snapshots ../participant-kit/snapshots \
+  --reference 04_2026-08-27_rebaseline \
+  --candidate 05_2026-09-28_latest
+```
 
 ## Measured results
 
@@ -30,6 +42,6 @@ The grader entry point is [`solution.build()`](solution.py). It returns a system
 | Organizer public evaluation, 40 questions | 0.9535 vs. 0.093 for the starter. Zero execution errors and zero stale-value traps. |
 | Public answer latency | 0.02 s p95 on the development machine. |
 | Organizer self-test | 1.0 across five questions and one labeled conflict. |
-| Unit tests | Six passed. |
+| Unit tests | Nine passed. |
 
 The public evaluation checks answer quality on the supplied questions. The labeled self-test exercises the conflict scorer on one known case. The hidden evaluation remains unmeasured.

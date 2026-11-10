@@ -92,7 +92,9 @@ def _classify(headers, row, context, path):
     if first in ("certificate", "ira type") or (
         first == "term" and "min to earn" in headers and "dividend rate" in headers
     ):
-        kind = "ira" if first == "ira type" or path.startswith("/personal/retirement") else "certificate"
+        is_ira = (first == "ira type" or path.startswith("/personal/retirement")
+                  or re.match(r"^(?:roth|traditional|coverdell|sep)\s*:", row[0], re.I))
+        kind = "ira" if is_ira else "certificate"
         if kind == "certificate" and path.startswith("/business/"):
             kind = "business certificate"
         return kind, row[0], row[-1]
