@@ -7,6 +7,7 @@ import re
 from urllib.parse import urlsplit
 
 from contract import Answer, Conflict, Snapshot, Source
+from rate_tables import APR_CEILING, term_months
 
 
 # The product pages and central rate sheet publish rates. The calculator
@@ -17,7 +18,7 @@ PUBLISHERS = (
     "/rates",
 )
 CALCULATOR = "/calculators/vehicle-affordability"
-LOAN = re.compile(r"\b(?:auto|car|vehicle)\s+(?:loans?|financing)\b", re.I)
+LOAN = re.compile(r"\b(?:auto|car|vehicle)[\s–—-]+(?:loans?|financing)\b", re.I)
 RATE = re.compile(r"\b(?:apr|rates?|annual percentage rate)\b", re.I)
 TERM = re.compile(r"\b(\d{1,3})[\s-]*months?\b", re.I)
 YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
@@ -115,7 +116,9 @@ def _apr_label(value: Decimal) -> str:
 
 
 def answer_auto_rate(question: str, rates: list[AutoRate]) -> Answer:
-    terms = {int(term) for term in TERM.findall(question)}
+    if APR_CEILING.search(question.casefold()):
+        return Answer("I don't know. I couldn't verify a maximum APR for that auto loan.", confident=False)
+    terms = term_months(question)
     years = {int(year) for year in YEAR.findall(DATED_PHRASE.sub("", question))}
     if len(terms) != 1 or len(years) != 1:
         return Answer("Please specify one loan term and one vehicle model year.", confident=False)

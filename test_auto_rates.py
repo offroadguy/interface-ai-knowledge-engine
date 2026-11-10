@@ -39,7 +39,9 @@ class AutoRateTests(unittest.TestCase):
         self.assertFalse(engine.answer(f"{QUESTION} As of January 2026").confident)
         self.assertFalse(engine.answer(QUESTION, as_of="2025-12-31").confident)
 
-        for question in (QUESTION, "What is the auto financing rate for a 2020 model over 60 months?"):
+        for question in (QUESTION, "What is the auto financing rate for a 2020 model over 60 months?",
+                         "What's the 60-month auto-loan APR for a 2020 vehicle?",
+                         "What APR is available for a five-year auto loan on a 2020 model?"):
             current = engine.answer(question)
             self.assertTrue(current.confident)
             self.assertIn("as low as 4.25% APR", current.text)
@@ -54,6 +56,7 @@ class AutoRateTests(unittest.TestCase):
         self.assertEqual(set(conflict.values), {"4.10%", "4.25%"})
         self.assertEqual(conflict.resolution, "4.25%")
         self.assertEqual({source.url for source in conflict.sources}, {PRODUCT, CALCULATOR})
+        self.assertFalse(engine.answer("What is the maximum APR on a five-year auto loan for a 2020 model?").confident)
 
     def test_other_terms_and_nonoverlapping_tiers_are_not_conflicts(self):
         engine = build()
